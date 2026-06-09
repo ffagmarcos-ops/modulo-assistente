@@ -363,7 +363,8 @@ const generateErpJson = (domain: string) => {
     base_conhecimento,
     faq,
     fluxos,
-    gatilhos
+    gatilhos,
+    texto_manual: ""
   };
 };
 
@@ -382,6 +383,7 @@ export default function App() {
   // Configurable Assistant State
   const [assistantName, setAssistantName] = useState('Keystone AI');
   const [assistantGender, setAssistantGender] = useState<'masculino' | 'feminino'>('feminino');
+  const [supplementaryText, setSupplementaryText] = useState('');
 
   // Text to Speech States
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -467,6 +469,7 @@ export default function App() {
     // Inject dynamic names into generated guide JSON
     data.assistente.nome = assistantName;
     data.assistente.personalidade = `Especialista em ERP (${assistantGender === 'masculino' ? 'Lucas' : 'Sofia'})`;
+    data.texto_manual = supplementaryText;
     
     setGeneratedJson(data);
     setIsScanning(false);
@@ -1111,12 +1114,34 @@ export default function App() {
         if (faqMatch) {
           matchedResponse = faqMatch.resposta;
         } else {
-          // Standard help
-          matchedResponse = `Desculpe, não consegui compreender totalmente sua dúvida. \n\n` +
-            `Como sou o guia explicativo do **${generatedJson?.sistema || 'ERP'}**, você pode:\n` +
-            `• Selecionar um dos **módulos operacionais** na barra lateral para ver o manual didático da tela.\n` +
-            `• Selecionar um dos **fluxos de trabalho** para ver as etapas passo a passo.\n` +
-            `• Digitar dúvidas operacionais comuns (Ex: *"como cadastrar cliente"*, *"onde vejo o estoque"*).`;
+          // 5. Match Manual text supplement if available
+          let manualMatch = '';
+          if (generatedJson?.texto_manual) {
+            const normalizedManual = generatedJson.texto_manual.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+            if (textNorm.includes("manual complementar") || textNorm.includes("informacao complementar") || textNorm.includes("texto manual") || textNorm.includes("dicas extras")) {
+              manualMatch = `📖 **Manual Complementar de Treinamento:**\n\n${generatedJson.texto_manual}`;
+            } else if (textNorm.length > 3 && normalizedManual.includes(textNorm)) {
+              const paragraphs = generatedJson.texto_manual.split('\n').filter((p: string) => p.trim());
+              const matchedParagraph = paragraphs.find((p: string) => {
+                const pNorm = p.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+                return pNorm.includes(textNorm);
+              });
+              if (matchedParagraph) {
+                manualMatch = `📖 **Informação Complementar do Manual:**\n\n${matchedParagraph}`;
+              }
+            }
+          }
+
+          if (manualMatch) {
+            matchedResponse = manualMatch;
+          } else {
+            // Standard help
+            matchedResponse = `Desculpe, não consegui compreender totalmente sua dúvida. \n\n` +
+              `Como sou o guia explicativo do **${generatedJson?.sistema || 'ERP'}**, você pode:\n` +
+              `• Selecionar um dos **módulos operacionais** na barra lateral para ver o manual didático da tela.\n` +
+              `• Selecionar um dos **fluxos de trabalho** para ver as etapas passo a passo.\n` +
+              `• Digitar dúvidas operacionais comuns (Ex: *"como cadastrar cliente"*, *"onde vejo o estoque"*).`;
+          }
         }
       }
     }
@@ -1845,7 +1870,29 @@ export default function App() {
           if (faq) {
             reply = faq.resposta;
           } else {
-            reply = \`Desculpe, não consegui encontrar uma instrução exata para sua dúvida. \\n\\nTente perguntar de outra forma ou selecione um módulo operacional! Ex: *"como cadastrar cliente"*, *"emitir nota"*, *"fluxo de estoque"*.\`;
+            // Try manual text matching if available
+            let manualMatch = '';
+            if (WIDGET_GUIDE.texto_manual) {
+              const normalizedManual = WIDGET_GUIDE.texto_manual.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, "");
+              if (textNorm.includes("manual complementar") || textNorm.includes("informacao complementar") || textNorm.includes("texto manual") || textNorm.includes("dicas extras")) {
+                manualMatch = \`📖 **Manual Complementar de Treinamento:**\\n\\n\${WIDGET_GUIDE.texto_manual}\`;
+              } else if (textNorm.length > 3 && normalizedManual.includes(textNorm)) {
+                const paragraphs = WIDGET_GUIDE.texto_manual.split('\\n').filter(p => p.trim());
+                const matchedParagraph = paragraphs.find(p => {
+                  const pNorm = p.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, "");
+                  return pNorm.includes(textNorm);
+                });
+                if (matchedParagraph) {
+                  manualMatch = \`📖 **Informação Complementar do Manual:**\\n\\n\${matchedParagraph}\`;
+                }
+              }
+            }
+
+            if (manualMatch) {
+              reply = manualMatch;
+            } else {
+              reply = \`Desculpe, não consegui encontrar uma instrução exata para sua dúvida. \\n\\nTente perguntar de outra forma ou selecione um módulo operacional! Ex: *"como cadastrar cliente"*, *"emitir nota"*, *"fluxo de estoque"*.\`;
+            }
           }
         }
       }
@@ -2189,6 +2236,46 @@ export default function App() {
                     </div>
                     <span style={{ display: 'block', fontSize: '0.52rem', color: 'rgba(255,255,255,0.3)', marginTop: '4px', lineHeight: '1.3' }}>
                       Deixe vazio para usar vozes gratuitas. Obtenha a chave gratuita em <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" style={{ color: '#8338ec', textDecoration: 'none' }}>ai.google.dev</a>.
+                    </span>
+                  </div>
+
+                  {/* Texto Complementar de Treinamento */}
+                  <div style={{
+                    marginTop: '10px',
+                    borderTop: '1px solid rgba(255,255,255,0.06)',
+                    paddingTop: '10px'
+                  }}>
+                    <label style={{ display: 'block', fontSize: '0.55rem', color: '#8b8e99', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800 }}>
+                      Complemento de Treinamento (Manual)
+                    </label>
+                    <textarea 
+                      value={supplementaryText}
+                      onChange={(e) => {
+                        setSupplementaryText(e.target.value);
+                        if (generatedJson) {
+                          setGeneratedJson((prev: any) => ({
+                            ...prev,
+                            texto_manual: e.target.value
+                          }));
+                        }
+                      }}
+                      placeholder="Adicione instruções, regras de negócio ou dicas adicionais para complementar a base de conhecimento..."
+                      style={{
+                        width: '100%',
+                        height: '70px',
+                        padding: '6px',
+                        fontSize: '0.68rem',
+                        backgroundColor: '#09090b',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: '4px',
+                        color: '#fff',
+                        outline: 'none',
+                        resize: 'none',
+                        fontFamily: 'inherit'
+                      }}
+                    />
+                    <span style={{ display: 'block', fontSize: '0.52rem', color: 'rgba(255,255,255,0.3)', marginTop: '2px', lineHeight: '1.3' }}>
+                      Este manual será embutido no JSON do assistente e pesquisado pelo chat.
                     </span>
                   </div>
                 </div>
