@@ -385,6 +385,57 @@ export default function App() {
   const [assistantGender, setAssistantGender] = useState<'masculino' | 'feminino'>('feminino');
   const [supplementaryText, setSupplementaryText] = useState('');
 
+  // Repositório de Assistentes Salvos
+  const [savedAssistants, setSavedAssistants] = useState<any[]>(() => {
+    try {
+      const stored = localStorage.getItem('saved_assistants_repository');
+      return stored ? JSON.parse(stored) : [];
+    } catch (e) {
+      console.error(e);
+      return [];
+    }
+  });
+
+  // Sincronizar alterações do assistente ativo de volta para a lista do repositório
+  useEffect(() => {
+    if (!generatedJson || !scannedUrl) return;
+    
+    setSavedAssistants(prev => {
+      const existing = prev.find(item => item.url === scannedUrl);
+      if (!existing) return prev;
+      
+      const hasChanges = 
+        existing.assistantName !== assistantName ||
+        existing.assistantGender !== assistantGender ||
+        existing.supplementaryText !== supplementaryText;
+        
+      if (!hasChanges) return prev;
+
+      const updated = prev.map(item => {
+        if (item.url === scannedUrl) {
+          return {
+            ...item,
+            assistantName,
+            assistantGender,
+            supplementaryText,
+            json: {
+              ...item.json,
+              assistente: {
+                ...item.json.assistente,
+                nome: assistantName,
+                personalidade: `Especialista em ERP (${assistantGender === 'masculino' ? 'Lucas' : 'Sofia'})`
+              },
+              texto_manual: supplementaryText
+            }
+          };
+        }
+        return item;
+      });
+      localStorage.setItem('saved_assistants_repository', JSON.stringify(updated));
+      return updated;
+    });
+  }, [assistantName, assistantGender, supplementaryText, scannedUrl]);
+
   // Text to Speech States
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakingText, setSpeakingText] = useState('');
@@ -461,6 +512,7 @@ export default function App() {
     setIsScanning(true);
     setIsScanned(false);
     setScannedUrl(inputUrl);
+    setSupplementaryText(''); // Reseta o texto complementar ao escanear nova URL
   };
 
   const handleScanComplete = () => {
@@ -471,6 +523,23 @@ export default function App() {
     data.assistente.personalidade = `Especialista em ERP (${assistantGender === 'masculino' ? 'Lucas' : 'Sofia'})`;
     data.texto_manual = supplementaryText;
     
+    const newAssistant = {
+      id: Date.now().toString(),
+      sistema: data.sistema,
+      url: scannedUrl,
+      assistantName,
+      assistantGender,
+      supplementaryText,
+      json: data
+    };
+
+    setSavedAssistants(prev => {
+      const filtered = prev.filter(item => item.url !== scannedUrl);
+      const updated = [newAssistant, ...filtered];
+      localStorage.setItem('saved_assistants_repository', JSON.stringify(updated));
+      return updated;
+    });
+
     setGeneratedJson(data);
     setIsScanning(false);
     setIsScanned(true);
@@ -2048,6 +2117,31 @@ export default function App() {
             )}
           </button>
         </form>
+        {isScanned && (
+          <button
+            onClick={() => {
+              setIsScanned(false);
+              setGeneratedJson(null);
+            }}
+            style={{
+              backgroundColor: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#fff',
+              padding: '8px 14px',
+              borderRadius: '6px',
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.15s ease'
+            }}
+            className="animate-hover"
+          >
+            <i className="fas fa-arrow-left"></i> Voltar ao Repositório
+          </button>
+        )}
       </header>
 
       {/* Main Workspace Frame */}
@@ -2060,11 +2154,14 @@ export default function App() {
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            justifyContent: 'center',
+            justifyContent: savedAssistants.length > 0 ? 'flex-start' : 'center',
             padding: '40px',
             textAlign: 'center',
-            maxWidth: '600px',
+            maxWidth: savedAssistants.length > 0 ? '1000px' : '600px',
             margin: '0 auto',
+            width: '100%',
+            overflowY: 'auto',
+            maxHeight: '100%',
             animation: 'fadeIn 0.3s ease'
           }}>
             <div style={{
@@ -2077,15 +2174,135 @@ export default function App() {
               alignItems: 'center',
               justifyContent: 'center',
               marginBottom: '24px',
-              boxShadow: '0 0 30px rgba(131, 56, 236, 0.25)'
+              boxShadow: '0 0 30px rgba(131, 56, 236, 0.25)',
+              flexShrink: 0
             }}>
               <i className="fas fa-network-wired" style={{ fontSize: '2.2rem', color: '#8338ec' }}></i>
             </div>
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 900, color: '#fff', marginBottom: '12px' }}>Geração de Guia Didático por IA</h2>
-            <p style={{ fontSize: '0.82rem', color: '#8b8e99', lineHeight: '1.6', marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 900, color: '#fff', marginBottom: '12px', flexShrink: 0 }}>Geração de Guia Didático por IA</h2>
+            <p style={{ fontSize: '0.82rem', color: '#8b8e99', lineHeight: '1.6', marginBottom: '24px', flexShrink: 0 }}>
               Nosso rastreador inteligente analisa a URL do seu sistema, mapeia todas as telas, inputs e botões operacionais, e constrói instantaneamente uma base completa com mais de 500 artigos, FAQs e 1000 gatilhos de chat estruturados.
             </p>
-            <div style={{ display: 'flex', gap: '16px', fontSize: '0.72rem', color: '#b5b5b9', flexWrap: 'wrap', justifyContent: 'center' }}>
+
+            {/* Grid de Assistentes Salvos (Repositório) */}
+            {savedAssistants.length > 0 && (
+              <div style={{
+                width: '100%',
+                maxWidth: '900px',
+                marginTop: '10px',
+                marginBottom: '30px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                flexShrink: 0
+              }}>
+                <h3 style={{ fontSize: '0.8rem', fontWeight: 800, textTransform: 'uppercase', color: '#8b8e99', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '6px', textAlign: 'left' }}>
+                  📂 Repositório de Assistentes Salvos ({savedAssistants.length})
+                </h3>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: '16px',
+                  textAlign: 'left'
+                }}>
+                  {savedAssistants.map((assistant) => (
+                    <div 
+                      key={assistant.id}
+                      style={{
+                        backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid rgba(255, 255, 255, 0.06)',
+                        borderRadius: '10px',
+                        padding: '16px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        transition: 'all 0.2s ease',
+                        cursor: 'default'
+                      }}
+                      className="animate-hover"
+                    >
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <strong style={{ fontSize: '0.82rem', color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '180px' }}>{assistant.sistema}</strong>
+                          <span style={{ fontSize: '0.58rem', backgroundColor: 'rgba(131,56,236,0.15)', color: '#a16cff', padding: '2px 6px', borderRadius: '4px', fontWeight: 800 }}>
+                            {assistant.json?.modulos?.length || 0} Telas
+                          </span>
+                        </div>
+                        <span style={{ display: 'block', fontSize: '0.62rem', color: 'rgba(255,255,255,0.3)', marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          URL: {assistant.url}
+                        </span>
+                        <span style={{ display: 'block', fontSize: '0.65rem', color: '#b5b5b9', marginTop: '8px' }}>
+                          👤 Assistente: <strong>{assistant.assistantName}</strong> ({assistant.assistantGender === 'masculino' ? 'Lucas' : 'Sofia'})
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '10px' }}>
+                        <button
+                          onClick={() => {
+                            setScannedUrl(assistant.url);
+                            setAssistantName(assistant.assistantName);
+                            setAssistantGender(assistant.assistantGender);
+                            setSupplementaryText(assistant.supplementaryText);
+                            setGeneratedJson(assistant.json);
+                            setIsScanned(true);
+                            setIsScanning(false);
+                            
+                            // Inicializa o chat com os detalhes carregados do assistente
+                            setChatMessages([
+                              {
+                                sender: 'assistant',
+                                text: `🤖 **Olá! Eu sou o ${assistant.assistantName}, seu guia explicativo do ${assistant.sistema}.**\n\nEu rastreei e analisei a estrutura de todo o sistema! \n\nEstou aqui para ensinar novos usuários. Você pode selecionar os tópicos de aprendizagem na barra lateral ou me perguntar qualquer dúvida direta sobre telas, botões ou fluxos de trabalho (ex: *"como cadastrar cliente"*, *"rejeição na nota"*).\n\n💡 **Dica:** Clique no ícone de alto-falante ao lado de qualquer mensagem para gerar e ouvir o tutorial narrado por voz!`
+                              }
+                            ]);
+                          }}
+                          style={{
+                            flex: 1,
+                            backgroundColor: '#8338ec',
+                            border: 'none',
+                            borderRadius: '6px',
+                            color: '#fff',
+                            fontSize: '0.68rem',
+                            fontWeight: 800,
+                            padding: '6px',
+                            cursor: 'pointer',
+                            textAlign: 'center'
+                          }}
+                        >
+                          <i className="fas fa-folder-open"></i> Abrir Painel
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`Tem certeza que deseja excluir o assistente do ${assistant.sistema}?`)) {
+                              setSavedAssistants(prev => {
+                                const updated = prev.filter(item => item.id !== assistant.id);
+                                localStorage.setItem('saved_assistants_repository', JSON.stringify(updated));
+                                return updated;
+                              });
+                            }
+                          }}
+                          style={{
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            border: '1px solid rgba(239, 68, 68, 0.2)',
+                            borderRadius: '6px',
+                            color: '#ef4444',
+                            fontSize: '0.68rem',
+                            padding: '6px 10px',
+                            cursor: 'pointer'
+                          }}
+                          title="Excluir Assistente"
+                        >
+                          <i className="fas fa-trash-alt"></i>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '16px', fontSize: '0.72rem', color: '#b5b5b9', flexWrap: 'wrap', justifyContent: 'center', flexShrink: 0 }}>
               <span style={{ backgroundColor: '#121217', padding: '6px 12px', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.03)' }}>
                 <i className="fas fa-shield-alt" style={{ marginRight: '6px', color: '#10b981' }}></i> Análise Segura
               </span>
