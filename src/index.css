@@ -311,3 +311,141 @@ body {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* =======================================================================
+   ESTILOS DE IMPRESSÃO (CARTILHA DE BOAS PRÁTICAS)
+   ======================================================================= */
+@media print {
+  /* Ocultar elementos desnecessários do painel de controle e do simulador */
+  .top-scanner-bar,
+  .left-control-pane,
+  aside,
+  .chat-title-bar,
+  .chat-tab-navigation,
+  .training-subtab-navigation,
+  .playbook-header button {
+    display: none !important;
+  }
+
+  /* Resetar o layout de grade e container do navegador para fluxo de página impressa */
+  html, body {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    overflow: visible !important;
+    font-family: Arial, sans-serif !important;
+  }
+
+  .app-container {
+    height: auto !important;
+    overflow: visible !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+  }
+
+  /* Expandir a área principal de exibição */
+  div[style*="flex: 1"],
+  .dashboard-workspace,
+  main,
+  .right-preview-pane {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  /* Remover preenchimentos/cores de fundo escuro do simulador no container de treinamento */
+  .right-preview-pane > div:nth-child(2) {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* Estilizar o playbook impresso */
+  .print-playbook-container {
+    display: block !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 20px !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .print-playbook-container * {
+    color: #000000 !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+  }
+
+  .playbook-header {
+    border-bottom: 2px solid #000000 !important;
+    margin-bottom: 20px !important;
+    padding-bottom: 10px !important;
+  }
+
+  .playbook-header h4 {
+    font-size: 16pt !important;
+    font-weight: bold !important;
+    margin: 0 !important;
+  }
+
+  .playbook-header span {
+    font-size: 10pt !important;
+    color: #555555 !important;
+  }
+
+  /* Grid das colunas da cartilha: forçar exibição lado a lado na folha se houver espaço, ou empilhado */
+  .playbook-grid-print {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 20px !important;
+    width: 100% !important;
+  }
+
+  /* Cartões individuais */
+  .playbook-grid-print > div > div {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    border: 1px solid #000000 !important;
+    border-radius: 8px !important;
+    padding: 15px !important;
+    page-break-inside: avoid !important;
+    box-shadow: none !important;
+  }
+
+  .playbook-grid-print strong {
+    font-size: 12pt !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    margin-bottom: 10px !important;
+    border-bottom: 1px solid #cccccc !important;
+    padding-bottom: 4px !important;
+  }
+
+  /* Ajustar cores dos títulos dos cartões para contraste na impressão em escala de cinza */
+  .playbook-grid-print strong i {
+    font-size: 10pt !important;
+  }
+
+  .playbook-grid-print ul,
+  .playbook-grid-print ol {
+    padding-left: 20px !important;
+    margin: 0 !important;
+  }
+
+  .playbook-grid-print li {
+    font-size: 10pt !important;
+    line-height: 1.5 !important;
+    margin-bottom: 8px !important;
+    color: #111111 !important;
+  }
+}

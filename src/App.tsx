@@ -389,8 +389,8 @@ export default function App() {
   const [speechRate, setSpeechRate] = useState<number>(1);
 
   // --- GOOGLE AI STUDIO E ESTADO DE PODCAST DIALOGADO ---
-  // Controle de abas: 'chat' para Chat de Ajuda Didático e 'podcast' para o Tutorial Dialogado (2 vozes)
-  const [activeTab, setActiveTab] = useState<'chat' | 'podcast'>('chat');
+  // Controle de abas: 'chat' (Guia), 'podcast' (Vozes) ou 'training' (LMS)
+  const [activeTab, setActiveTab] = useState<'chat' | 'podcast' | 'training'>('chat');
   // Chave API do Gemini (salva em localStorage para persistência fácil)
   const [geminiApiKey, setGeminiApiKey] = useState<string>(() => localStorage.getItem('gemini_api_key') || '');
   // Tópico selecionado atualmente (módulo ou fluxo de trabalho) para o podcast
@@ -404,6 +404,21 @@ export default function App() {
   
   // Referência para controlar o objeto Audio da API do Gemini e permitir pausar/parar
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // --- ESTADOS DA SUÍTE DE TREINAMENTO (LMS) ---
+  // Sub-aba ativa dentro de Treinamento: 'slides', 'quiz' ou 'playbook'
+  const [trainingSubTab, setTrainingSubTab] = useState<'slides' | 'quiz' | 'playbook'>('slides');
+  // Índice do slide atual na apresentação do sistema
+  const [activeSlideIdx, setActiveSlideIdx] = useState<number>(0);
+  // Módulo focado para a geração de perguntas do quiz
+  const [activeQuizModule, setActiveQuizModule] = useState<string>('');
+  // Banco de dados dinâmico de perguntas do quiz ativo
+  const [quizQuestions, setQuizQuestions] = useState<{ question: string; options: string[]; correctAnswerIdx: number; explanation: string }[]>([]);
+  // Armazena as opções selecionadas pelo usuário por index
+  const [userAnswers, setUserAnswers] = useState<Record<number, number>>({});
+  const [quizCompleted, setQuizCompleted] = useState<boolean>(false);
+  const [quizScore, setQuizScore] = useState<number>(0);
+  const [isQuizGenerating, setIsQuizGenerating] = useState<boolean>(false);
 
   // Chatbot states
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
@@ -864,6 +879,159 @@ export default function App() {
     };
 
     window.speechSynthesis.speak(utterance);
+  };
+
+  // ==========================================
+  // GERADOR E MOTOR DE QUIZ DE TREINAMENTO (LMS)
+  // ==========================================
+
+  /**
+   * Gerador offline de perguntas do Quiz baseado na base de conhecimento extraída do sistema.
+   * Cria perguntas perfeitamente contextualizadas mesmo sem internet.
+   */
+  const generateOfflineQuiz = (moduleName: string) => {
+    const mod = generatedJson?.modulos?.find((m: any) => m.nome === moduleName);
+    const telas = mod?.telas?.[0];
+    const campos = telas?.campos || [];
+    const erros = telas?.erros_comuns || [];
+
+    const q1Text = `Qual é o objetivo principal do módulo de ${moduleName}?`;
+    const q1Opts = [
+      mod?.objetivo || `Gerenciar as atividades relacionadas a ${moduleName.toLowerCase()}.`,
+      `Auditar logs de segurança de rede e logins simultâneos do banco de dados.`,
+      `Cadastrar novas chaves de acesso para APIs externas de faturamento.`
+    ];
+
+    const campoNome = campos[0]?.nome || "Código de Identificação";
+    const q2Text = `Qual dos seguintes campos é solicitado na tela de ${moduleName}?`;
+    const q2Opts = [
+      `Campo "${campoNome}"`,
+      `Campo "Hash de Segurança SHA256"`,
+      `Campo "Código de Integração Fiscal Externa"`
+    ];
+
+    const erroTexto = erros[0] || "Tentar salvar sem preencher os campos obrigatórios.";
+    const q3Text = `Qual é o erro mais comum que novos usuários devem evitar no módulo de ${moduleName}?`;
+    const q3Opts = [
+      erroTexto,
+      `Digitar a URL inteira do sistema no campo de texto de busca.`,
+      `Realizar a exclusão permanente de registros faturados no ano anterior.`
+    ];
+
+    const correct1 = q1Opts[0];
+    const correct2 = q2Opts[0];
+    const correct3 = q3Opts[0];
+
+    const shuffled1 = [...q1Opts].sort(() => Math.random() - 0.5);
+    const shuffled2 = [...q2Opts].sort(() => Math.random() - 0.5);
+    const shuffled3 = [...q3Opts].sort(() => Math.random() - 0.5);
+
+    return [
+      {
+        question: q1Text,
+        options: shuffled1,
+        correctAnswerIdx: shuffled1.indexOf(correct1),
+        explanation: `O objetivo deste módulo é: ${mod?.descricao || "Otimizar o fluxo de dados."}`
+      },
+      {
+        question: q2Text,
+        options: shuffled2,
+        correctAnswerIdx: shuffled2.indexOf(correct2),
+        explanation: `O campo "${campoNome}" é parte essencial do formulário deste módulo.`
+      },
+      {
+        question: q3Text,
+        options: shuffled3,
+        correctAnswerIdx: shuffled3.indexOf(correct3),
+        explanation: `Evitar "${erroTexto}" é uma das melhores práticas operacionais ensinadas no treinamento.`
+      }
+    ];
+  };
+
+  /**
+   * Gera perguntas dinâmicas integrando com a API do Gemini 1.5 Flash.
+   */
+  const fetchGeminiQuiz = async (moduleName: string, apiKey: string) => {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const mod = generatedJson?.modulos?.find((m: any) => m.nome === moduleName);
+    const telas = mod?.telas?.[0];
+    
+    const context = `Módulo: ${moduleName}. Descrição: ${mod?.descricao}. Objetivo: ${mod?.objetivo}. Campos: ${telas?.campos?.map((c: any) => c.nome).join(', ')}. Erros comuns: ${telas?.erros_comuns?.join(', ')}.`;
+
+    const prompt = `Crie um questionário de treinamento com 3 perguntas de múltipla escolha sobre o módulo "${moduleName}".
+    O público-alvo são novos funcionários aprendendo a usar o sistema.
+    Aqui estão os dados estruturados do módulo: ${context}
+    
+    Retorne a resposta EXCLUSIVAMENTE como um JSON estruturado (sem blocos de código markdown como \`\`\`json, apenas o JSON bruto), contendo uma lista de objetos no seguinte formato:
+    [
+      {
+        "question": "pergunta sobre o módulo",
+        "options": ["opção correta", "opção incorreta 1", "opção incorreta 2", "opção incorreta 3"],
+        "correctAnswerIdx": 0,
+        "explanation": "justificativa curta de porque esta opção está correta"
+      }
+    ]`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Erro na API: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      throw new Error("Resposta de IA inválida.");
+    }
+    
+    // Processa as perguntas e embaralha as opções para não deixar a correta sempre no index 0
+    const questions = JSON.parse(text) as any[];
+    return questions.map(q => {
+      const originalCorrectText = q.options[q.correctAnswerIdx];
+      const shuffledOptions = [...q.options].sort(() => Math.random() - 0.5);
+      const newCorrectIdx = shuffledOptions.indexOf(originalCorrectText);
+      return {
+        question: q.question,
+        options: shuffledOptions,
+        correctAnswerIdx: newCorrectIdx !== -1 ? newCorrectIdx : 0,
+        explanation: q.explanation
+      };
+    });
+  };
+
+  /**
+   * Aciona a geração de um novo questionário de treinamento.
+   */
+  const handleGenerateQuiz = async (moduleName: string) => {
+    if (!moduleName) return;
+    setIsQuizGenerating(true);
+    setQuizCompleted(false);
+    setUserAnswers({});
+    setQuizScore(0);
+    setActiveQuizModule(moduleName);
+
+    try {
+      if (geminiApiKey.trim()) {
+        const questions = await fetchGeminiQuiz(moduleName, geminiApiKey);
+        setQuizQuestions(questions);
+      } else {
+        const questions = generateOfflineQuiz(moduleName);
+        setQuizQuestions(questions);
+      }
+    } catch (err) {
+      console.error("Erro ao gerar quiz online, usando fallback local:", err);
+      const questions = generateOfflineQuiz(moduleName);
+      setQuizQuestions(questions);
+    } finally {
+      setIsQuizGenerating(false);
+    }
   };
 
   // Helper to handle chatbot messaging and matching NLP triggers
@@ -1738,6 +1906,55 @@ export default function App() {
     f.nome.toLowerCase().includes(sidebarSearch.toLowerCase())
   ) || [];
 
+  // Roteiro fixo/dinâmico de slides para a apresentação na Suíte de Treinamento
+  const trainingSlides = [
+    {
+      title: `👋 Bem-vindo ao Treinamento do ${generatedJson?.sistema || 'ERP'}!`,
+      icon: "fas fa-door-open",
+      content: `Este guia interativo ajudará você a entender a arquitetura, telas e fluxos operacionais do sistema de forma rápida, didática e produtiva.`,
+      points: [
+        `Mapeamento de ${generatedJson?.modulos?.length || 0} telas/módulos essenciais do sistema.`,
+        `Rastreamento de ${generatedJson?.fluxos?.length || 0} fluxos de processos de trabalho sequenciais.`,
+        `Treinamento visual e prático livre de custos de tokens de IA.`,
+        `Use os botões de navegação no painel inferior para avançar.`
+      ]
+    },
+    {
+      title: `📊 Módulos e Recursos do Sistema`,
+      icon: "fas fa-desktop",
+      content: `O sistema contém recursos essenciais organizados por módulos. Aqui estão os principais identificados no escaneamento:`,
+      points: generatedJson?.modulos?.slice(0, 4).map((m: any) => `${m.nome}: ${m.descricao}`) || []
+    },
+    {
+      title: `📋 Fluxos Operacionais Críticos`,
+      icon: "fas fa-route",
+      content: `Estes são os fluxos que guiarão o seu dia a dia operacional na empresa de forma padronizada e livre de inconsistências:`,
+      points: generatedJson?.fluxos?.slice(0, 4).map((f: any) => `${f.nome}: Processo sequencial de ${f.etapas?.length || 0} etapas detalhadas.`) || []
+    },
+    {
+      title: `⚠️ Alerta de Prevenção de Erros`,
+      icon: "fas fa-exclamation-triangle",
+      content: `Reunimos os erros de novos usuários mais comuns para que você evite erros de digitação e divergências fiscais ou cadastrais:`,
+      points: [
+        `Campos Vermelhos: Tentar prosseguir sem completar os dados com bordas destacadas.`,
+        `Fiscal e Notas: Erros na digitação manual de chaves de acesso ou NCMs indevidos.`,
+        `Alterações: Modificar vendas ou pedidos após faturamento concluído no financeiro.`,
+        `Estoque: Registrar baixas manuais de produtos sem indicar a quantidade ou justificativa.`
+      ]
+    },
+    {
+      title: `💡 Melhores Práticas de Operação`,
+      icon: "fas fa-lightbulb",
+      content: `Adote estas práticas recomendadas para garantir a integridade dos relatórios gerenciais e maximizar sua velocidade:`,
+      points: [
+        `Limpeza de filtros: Sempre resete a busca antes de abrir uma nova pesquisa em tabelas.`,
+        `Assistente Integrado: Use o chat explicativo ao lado para sanar dúvidas instantâneas.`,
+        `Comprovantes: Sempre faça a visualização e impressão em PDF de notas fiscais e OSs concluídas.`,
+        `Widget Offline: Baixe e instale o widget de ajuda para suporte flutuante mesmo sem internet.`
+      ]
+    }
+  ];
+
   return (
     <div className="app-container" style={{ display: 'flex', flexDirection: 'column', height: '100vh', backgroundColor: '#09090b' }}>
       
@@ -2143,7 +2360,7 @@ export default function App() {
             }}>
               
               {/* Chat Title bar */}
-              <div style={{
+              <div className="chat-title-bar" style={{
                 padding: '14px 20px',
                 borderBottom: '1px solid rgba(255,255,255,0.06)',
                 backgroundColor: 'rgba(255,255,255,0.01)',
@@ -2180,7 +2397,7 @@ export default function App() {
               </div>
 
               {/* Navegação de Abas no topo do Painel Principal */}
-              <div style={{
+              <div className="chat-tab-navigation" style={{
                 display: 'flex',
                 borderBottom: '1px solid rgba(255,255,255,0.06)',
                 backgroundColor: 'rgba(255,255,255,0.02)'
@@ -2205,7 +2422,7 @@ export default function App() {
                   }}
                 >
                   <i className="fas fa-comments" style={{ color: activeTab === 'chat' ? '#8338ec' : 'inherit' }}></i>
-                  Chat Guia Explicativo
+                  Chat Guia
                 </button>
                 <button
                   onClick={() => {
@@ -2232,11 +2449,40 @@ export default function App() {
                   }}
                 >
                   <i className="fas fa-microphone" style={{ color: activeTab === 'podcast' ? '#8338ec' : 'inherit' }}></i>
-                  Diálogo Falado (Lucas & Sofia)
+                  Diálogo Falado
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTab('training');
+                    if (!activeQuizModule && generatedJson?.modulos?.length > 0) {
+                      handleGenerateQuiz(generatedJson.modulos[0].nome);
+                    }
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    background: activeTab === 'training' ? 'rgba(255,255,255,0.03)' : 'transparent',
+                    border: 'none',
+                    borderBottom: activeTab === 'training' ? '2px solid #8338ec' : '2px solid transparent',
+                    color: activeTab === 'training' ? '#fff' : 'rgba(255,255,255,0.4)',
+                    fontSize: '0.72rem',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <i className="fas fa-graduation-cap" style={{ color: activeTab === 'training' ? '#8338ec' : 'inherit' }}></i>
+                  Suíte de Treinamento
                 </button>
               </div>
 
-              {activeTab === 'podcast' ? (
+              {/* CONTEÚDO CONDICIONAL DE ABAS */}
+              
+              {activeTab === 'podcast' && (
                 /* Aba do Podcast / Reprodutor de Diálogo Didático */
                 <div style={{
                   flex: 1,
@@ -2261,14 +2507,12 @@ export default function App() {
                         onClick={() => {
                           if (dialogueScript.length === 0) return;
                           if (isDialoguePlaying) {
-                            // Pausa
                             window.speechSynthesis?.cancel();
                             if (activeAudioRef.current) {
                               activeAudioRef.current.pause();
                             }
                             setIsDialoguePlaying(false);
                           } else {
-                            // Retoma reprodução a partir da linha atual
                             playDialogueLine(activeDialogueIdx !== null ? activeDialogueIdx : 0);
                           }
                         }}
@@ -2296,7 +2540,6 @@ export default function App() {
 
                       <button
                         onClick={() => {
-                          // Parar
                           window.speechSynthesis?.cancel();
                           if (activeAudioRef.current) {
                             activeAudioRef.current.pause();
@@ -2336,7 +2579,6 @@ export default function App() {
                                 activeAudioRef.current.playbackRate = rate;
                               }
                               if (isDialoguePlaying && activeDialogueIdx !== null) {
-                                // Aplica a alteração reiniciando o áudio se necessário
                                 playDialogueLine(activeDialogueIdx);
                               }
                             }}
@@ -2358,7 +2600,6 @@ export default function App() {
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {/* Efeito de onda sonora animada */}
                       {isDialoguePlaying && (
                         <div style={{ display: 'flex', gap: '2px', alignItems: 'flex-end', height: '10px' }}>
                           <div className="audio-wave-bar" style={{ width: '2px', height: '3px', backgroundColor: '#8338ec', borderRadius: '1px', animation: 'waveBounce 0.8s ease infinite alternate' }}></div>
@@ -2367,8 +2608,6 @@ export default function App() {
                           <div className="audio-wave-bar" style={{ width: '2px', height: '10px', backgroundColor: '#8338ec', borderRadius: '1px', animation: 'waveBounce 0.8s ease infinite alternate', animationDelay: '0.45s' }}></div>
                         </div>
                       )}
-                      
-                      {/* Badge indicadora de tecnologia */}
                       <span style={{
                         fontSize: '0.58rem',
                         color: geminiApiKey ? '#10b981' : '#f59e0b',
@@ -2384,7 +2623,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Área de Visualização do Roteiro Dialogado */}
+                  {/* Área do Roteiro Dialogado */}
                   <div style={{
                     flex: 1,
                     padding: '24px',
@@ -2397,7 +2636,6 @@ export default function App() {
                     gap: '16px'
                   }}>
                     {dialogueScript.length === 0 ? (
-                      /* Estado Vazio */
                       <div style={{ textAlign: 'center', maxWidth: '400px', margin: '0 auto' }}>
                         <div style={{ fontSize: '2.5rem', color: 'rgba(255,255,255,0.1)', marginBottom: '16px' }}>
                           <i className="fas fa-microphone-alt"></i>
@@ -2444,9 +2682,7 @@ export default function App() {
                         )}
                       </div>
                     ) : (
-                      /* Roteiro Carregado */
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        
                         <div style={{
                           backgroundColor: 'rgba(255,255,255,0.01)',
                           border: '1px solid rgba(255,255,255,0.04)',
@@ -2465,7 +2701,6 @@ export default function App() {
                               Onboarding conversacional em diálogo
                             </span>
                           </div>
-                          
                           <button
                             onClick={() => handleGenerateDialogue(selectedTopic!.name, selectedTopic!.type)}
                             disabled={isDialogueGenerating}
@@ -2501,7 +2736,6 @@ export default function App() {
                                 animation: 'fadeIn 0.25s ease'
                               }}
                             >
-                              {/* Avatar do Personagem */}
                               <div style={{
                                 width: '36px',
                                 height: '36px',
@@ -2518,7 +2752,6 @@ export default function App() {
                                 />
                               </div>
 
-                              {/* Balão do Diálogo */}
                               <div
                                 onClick={() => playDialogueLine(idx)}
                                 style={{
@@ -2537,14 +2770,7 @@ export default function App() {
                                   <strong style={{ fontSize: '0.68rem', color: isLucas ? '#3a86ff' : '#ec4899' }}>
                                     {line.character}
                                   </strong>
-                                  <i 
-                                    className="fas fa-volume-up" 
-                                    style={{ 
-                                      fontSize: '0.65rem', 
-                                      color: isActive ? '#8338ec' : 'rgba(255,255,255,0.2)',
-                                      opacity: isActive ? 1 : 0.4
-                                    }}
-                                  ></i>
+                                  <i className="fas fa-volume-up" style={{ fontSize: '0.65rem', color: isActive ? '#8338ec' : 'rgba(255,255,255,0.2)', opacity: isActive ? 1 : 0.4 }}></i>
                                 </div>
                                 <p style={{ fontSize: '0.72rem', color: '#d1d5db', lineHeight: '1.5', margin: 0 }}>
                                   {line.text}
@@ -2557,8 +2783,494 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              ) : (
-                /* Aba do Chat de Guia Explicativo Original */
+              )}
+
+              {activeTab === 'training' && (
+                /* Aba da Suíte de Treinamento e Onboarding (LMS) */
+                <div style={{
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden'
+                }}>
+                  {/* Menu interno de Sub-abas de Treinamento */}
+                  <div className="training-subtab-navigation" style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                    borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+                    padding: '8px 20px',
+                    display: 'flex',
+                    gap: '12px',
+                    flexShrink: 0
+                  }}>
+                    {[
+                      { id: 'slides', label: '📊 Apresentação', icon: 'fas fa-presentation-screen' },
+                      { id: 'quiz', label: '📝 Quiz de Avaliação', icon: 'fas fa-clipboard-question' },
+                      { id: 'playbook', label: '📋 Cartilha de Bolso', icon: 'fas fa-book-open' }
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setTrainingSubTab(tab.id as any)}
+                        style={{
+                          backgroundColor: trainingSubTab === tab.id ? 'rgba(131,56,236,0.15)' : 'transparent',
+                          border: 'none',
+                          borderBottom: trainingSubTab === tab.id ? '2px solid #8338ec' : '2px solid transparent',
+                          color: trainingSubTab === tab.id ? '#fff' : 'rgba(255,255,255,0.4)',
+                          padding: '6px 12px',
+                          borderRadius: '4px 4px 0 0',
+                          fontSize: '0.68rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <i className={tab.icon} style={{ color: trainingSubTab === tab.id ? '#8338ec' : 'inherit', fontSize: '0.62rem' }}></i>
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Área de Visualização do Conteúdo de Treinamento */}
+                  <div style={{
+                    flex: 1,
+                    padding: '20px',
+                    overflowY: 'auto',
+                    backgroundColor: '#09090b',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '16px'
+                  }}>
+                    
+                    {trainingSubTab === 'slides' && (
+                      /* Sub-aba 1: Slides de Apresentação */
+                      <div style={{
+                        flex: 1,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                        minHeight: '320px',
+                        animation: 'fadeIn 0.25s ease'
+                      }}>
+                        {/* Slide Card */}
+                        <div style={{
+                          backgroundColor: 'rgba(255,255,255,0.01)',
+                          border: '1px solid rgba(255,255,255,0.04)',
+                          borderRadius: '12px',
+                          padding: '24px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '16px',
+                          flex: 1
+                        }}>
+                          {/* Slide Progress bar */}
+                          <div style={{ width: '100%', height: '4px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                            <div style={{
+                              width: `${((activeSlideIdx + 1) / trainingSlides.length) * 100}%`,
+                              height: '100%',
+                              backgroundColor: '#8338ec',
+                              transition: 'width 0.3s ease'
+                            }}></div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '12px' }}>
+                            <div style={{
+                              width: '36px',
+                              height: '36px',
+                              borderRadius: '8px',
+                              backgroundColor: 'rgba(131,56,236,0.15)',
+                              border: '1px solid rgba(131,56,236,0.3)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: '#a16cff',
+                              fontSize: '1rem'
+                            }}>
+                              <i className={trainingSlides[activeSlideIdx].icon}></i>
+                            </div>
+                            <h4 style={{ fontSize: '0.9rem', color: '#fff', fontWeight: 800, margin: 0 }}>
+                              {trainingSlides[activeSlideIdx].title}
+                            </h4>
+                          </div>
+
+                          <p style={{ fontSize: '0.75rem', color: '#d1d5db', lineHeight: '1.6', margin: 0 }}>
+                            {trainingSlides[activeSlideIdx].content}
+                          </p>
+
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+                            {trainingSlides[activeSlideIdx].points.map((pt: string, idx: number) => (
+                              <div key={idx} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '0.7rem', color: '#8b8e99' }}>
+                                <i className="fas fa-check-circle" style={{ color: '#10b981', marginTop: '3px', fontSize: '0.62rem' }}></i>
+                                <span style={{ lineHeight: '1.4' }}>{pt}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Slide Navigation Buttons */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
+                          <button
+                            onClick={() => setActiveSlideIdx(prev => Math.max(0, prev - 1))}
+                            disabled={activeSlideIdx === 0}
+                            style={{
+                              backgroundColor: 'rgba(255,255,255,0.03)',
+                              border: '1px solid rgba(255,255,255,0.08)',
+                              borderRadius: '6px',
+                              padding: '8px 16px',
+                              color: activeSlideIdx === 0 ? 'rgba(255,255,255,0.2)' : '#fff',
+                              fontSize: '0.68rem',
+                              fontWeight: 800,
+                              cursor: activeSlideIdx === 0 ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <i className="fas fa-arrow-left"></i> Anterior
+                          </button>
+
+                          <span style={{ fontSize: '0.65rem', color: '#8b8e99', fontWeight: 800 }}>
+                            Slide {activeSlideIdx + 1} de {trainingSlides.length}
+                          </span>
+
+                          <button
+                            onClick={() => setActiveSlideIdx(prev => Math.min(trainingSlides.length - 1, prev + 1))}
+                            disabled={activeSlideIdx === trainingSlides.length - 1}
+                            style={{
+                              backgroundColor: '#8338ec',
+                              border: 'none',
+                              borderRadius: '6px',
+                              padding: '8px 16px',
+                              color: activeSlideIdx === trainingSlides.length - 1 ? 'rgba(255,255,255,0.2)' : '#fff',
+                              fontSize: '0.68rem',
+                              fontWeight: 800,
+                              cursor: activeSlideIdx === trainingSlides.length - 1 ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              boxShadow: '0 4px 10px rgba(131,56,236,0.3)'
+                            }}
+                          >
+                            Próximo <i className="fas fa-arrow-right"></i>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {trainingSubTab === 'quiz' && (
+                      /* Sub-aba 2: Quizzes Interativos */
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', animation: 'fadeIn 0.25s ease' }}>
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.01)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                          <div style={{ flex: 1 }}>
+                            <label style={{ display: 'block', fontSize: '0.55rem', color: '#8b8e99', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 800 }}>Selecione o módulo para teste</label>
+                            <select
+                              value={activeQuizModule}
+                              onChange={(e) => handleGenerateQuiz(e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '8px',
+                                fontSize: '0.72rem',
+                                backgroundColor: '#09090b',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                borderRadius: '6px',
+                                color: '#fff',
+                                outline: 'none',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <option value="">Selecione um módulo...</option>
+                              {generatedJson?.modulos?.map((m: any) => (
+                                <option key={m.id} value={m.nome}>{m.nome}</option>
+                              ))}
+                            </select>
+                          </div>
+                          
+                          {activeQuizModule && (
+                            <button
+                              onClick={() => handleGenerateQuiz(activeQuizModule)}
+                              disabled={isQuizGenerating}
+                              style={{
+                                alignSelf: 'flex-end',
+                                backgroundColor: 'transparent',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '6px',
+                                padding: '8px 12px',
+                                color: '#fff',
+                                fontSize: '0.68rem',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                            >
+                              <i className="fas fa-sync"></i> Reiniciar
+                            </button>
+                          )}
+                        </div>
+
+                        {isQuizGenerating && (
+                          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                            <i className="fas fa-spinner fa-spin" style={{ fontSize: '1.5rem', color: '#8338ec', marginBottom: '12px' }}></i>
+                            <p style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)' }}>
+                              {geminiApiKey ? "Elaborando perguntas personalizadas com a API do Gemini..." : "Gerando questionário offline a partir da base do sistema..."}
+                            </p>
+                          </div>
+                        )}
+
+                        {!isQuizGenerating && quizQuestions.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                            {quizQuestions.map((q, qIdx) => {
+                              const selectedOptIdx = userAnswers[qIdx];
+                              const isCorrect = selectedOptIdx === q.correctAnswerIdx;
+                              const showCorrection = selectedOptIdx !== undefined;
+
+                              return (
+                                <div
+                                  key={qIdx}
+                                  style={{
+                                    backgroundColor: 'rgba(255,255,255,0.01)',
+                                    border: '1px solid rgba(255,255,255,0.04)',
+                                    borderRadius: '8px',
+                                    padding: '16px',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '12px'
+                                  }}
+                                >
+                                  <h5 style={{ fontSize: '0.78rem', color: '#fff', fontWeight: 800 }}>
+                                    Questão {qIdx + 1}: {q.question}
+                                  </h5>
+                                  
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    {q.options.map((option, oIdx) => {
+                                      const isSelected = selectedOptIdx === oIdx;
+                                      const isThisCorrectOption = oIdx === q.correctAnswerIdx;
+                                      
+                                      let borderStyle = '1px solid rgba(255,255,255,0.08)';
+                                      let bgStyle = 'transparent';
+                                      let colorStyle = '#b5b5b9';
+
+                                      if (showCorrection) {
+                                        if (isThisCorrectOption) {
+                                          borderStyle = '1px solid #10b981';
+                                          bgStyle = 'rgba(16,185,129,0.08)';
+                                          colorStyle = '#10b981';
+                                        } else if (isSelected && !isCorrect) {
+                                          borderStyle = '1px solid #ef4444';
+                                          bgStyle = 'rgba(239,68,68,0.08)';
+                                          colorStyle = '#ef4444';
+                                        }
+                                      } else if (isSelected) {
+                                        borderStyle = '1px solid #8338ec';
+                                        bgStyle = 'rgba(131,56,236,0.08)';
+                                        colorStyle = '#a16cff';
+                                      }
+
+                                      return (
+                                        <button
+                                          key={oIdx}
+                                          disabled={showCorrection}
+                                          onClick={() => {
+                                            setUserAnswers(prev => ({ ...prev, [qIdx]: oIdx }));
+                                          }}
+                                          style={{
+                                            padding: '10px 12px',
+                                            backgroundColor: bgStyle,
+                                            border: borderStyle,
+                                            borderRadius: '6px',
+                                            color: colorStyle,
+                                            fontSize: '0.7rem',
+                                            textAlign: 'left',
+                                            cursor: showCorrection ? 'not-allowed' : 'pointer',
+                                            transition: 'all 0.15s ease'
+                                          }}
+                                          className={!showCorrection ? "animate-hover" : ""}
+                                        >
+                                          {option}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  {showCorrection && (
+                                    <div style={{
+                                      backgroundColor: isCorrect ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.05)',
+                                      borderLeft: isCorrect ? '3px solid #10b981' : '3px solid #ef4444',
+                                      padding: '8px 12px',
+                                      borderRadius: '0 6px 6px 0',
+                                      fontSize: '0.68rem',
+                                      lineHeight: '1.4',
+                                      color: isCorrect ? '#a7f3d0' : '#fca5a5'
+                                    }}>
+                                      <strong>{isCorrect ? '✅ Resposta Correta!' : '❌ Ops, Resposta Incorreta.'}</strong><br />
+                                      {q.explanation}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {/* Enviar respostas */}
+                            {!quizCompleted && (
+                              <button
+                                onClick={() => {
+                                  if (Object.keys(userAnswers).length < quizQuestions.length) {
+                                    alert("Por favor, responda a todas as questões antes de finalizar!");
+                                    return;
+                                  }
+                                  let score = 0;
+                                  quizQuestions.forEach((q, idx) => {
+                                    if (userAnswers[idx] === q.correctAnswerIdx) score++;
+                                  });
+                                  setQuizScore(score);
+                                  setQuizCompleted(true);
+                                }}
+                                style={{
+                                  backgroundColor: '#8338ec',
+                                  color: '#fff',
+                                  border: 'none',
+                                  padding: '10px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 800,
+                                  cursor: 'pointer',
+                                  textAlign: 'center',
+                                  boxShadow: '0 4px 10px rgba(131,56,236,0.3)'
+                                }}
+                              >
+                                Finalizar Questionário e Ver Nota
+                              </button>
+                            )}
+
+                            {quizCompleted && (
+                              <div style={{
+                                backgroundColor: 'rgba(131,56,236,0.1)',
+                                border: '1px solid rgba(131,56,236,0.2)',
+                                borderRadius: '8px',
+                                padding: '16px',
+                                textAlign: 'center',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px',
+                                alignItems: 'center'
+                              }}>
+                                <strong style={{ fontSize: '1.25rem', color: '#fff' }}>
+                                  Nota Final: {quizScore} / {quizQuestions.length}
+                                </strong>
+                                <p style={{ fontSize: '0.7rem', color: '#b5b5b9', margin: 0 }}>
+                                  {quizScore === quizQuestions.length 
+                                    ? "🏆 Excelente! Você dominou completamente este módulo!"
+                                    : "👍 Bom esforço! Revise as explicações e tente novamente."
+                                  }
+                                </p>
+                                <button
+                                  onClick={() => handleGenerateQuiz(activeQuizModule)}
+                                  style={{
+                                    backgroundColor: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    color: '#fff',
+                                    padding: '6px 12px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    marginTop: '6px'
+                                  }}
+                                >
+                                  Tentar Novamente
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {trainingSubTab === 'playbook' && (
+                      /* Sub-aba 3: Cartilha de Boas Práticas (Pronta para Impressão) */
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', animation: 'fadeIn 0.25s ease' }} className="print-playbook-container">
+                        <div className="playbook-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '12px' }}>
+                          <div>
+                            <h4 style={{ fontSize: '0.78rem', color: '#fff', fontWeight: 800 }}>
+                              📋 Cartilha de Onboarding e Boas Práticas
+                            </h4>
+                            <span style={{ fontSize: '0.58rem', color: 'rgba(255,255,255,0.4)' }}>
+                              Resumo didático para consulta rápida na mesa de trabalho
+                            </span>
+                          </div>
+
+                          <button
+                            onClick={() => window.print()}
+                            style={{
+                              backgroundColor: '#3a86ff',
+                              color: '#fff',
+                              border: 'none',
+                              padding: '6px 12px',
+                              borderRadius: '4px',
+                              fontSize: '0.65rem',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <i className="fas fa-print"></i> Imprimir Cartilha
+                          </button>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }} className="playbook-grid-print">
+                          {/* Coluna 1: Regras e Erros */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <div style={{ backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '8px', padding: '14px' }}>
+                              <strong style={{ fontSize: '0.7rem', color: '#ef4444', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                <i className="fas fa-exclamation-triangle"></i> Evite Erros Críticos
+                              </strong>
+                              <ul style={{ fontSize: '0.68rem', color: '#b5b5b9', paddingLeft: '16px', lineHeight: '1.5' }}>
+                                <li style={{ marginBottom: '6px' }}><strong>Dados Incompletos:</strong> Nunca salve cadastros se os campos com marcação vermelha estiverem vazios.</li>
+                                <li style={{ marginBottom: '6px' }}><strong>NCM Fiscais:</strong> Erros na classificação tributária impedem o faturamento imediato.</li>
+                                <li style={{ marginBottom: '6px' }}><strong>Registros Faturados:</strong> Alterar vendas já enviadas gera divergências financeiras severas.</li>
+                              </ul>
+                            </div>
+
+                            <div style={{ backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '8px', padding: '14px' }}>
+                              <strong style={{ fontSize: '0.7rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                <i className="fas fa-keyboard"></i> Atalhos e Comandos Úteis
+                              </strong>
+                              <ul style={{ fontSize: '0.68rem', color: '#b5b5b9', paddingLeft: '16px', lineHeight: '1.5' }}>
+                                <li style={{ marginBottom: '6px' }}><strong>Salvar Registro:</strong> Atalho padrão do sistema `Salvar Lançamento`.</li>
+                                <li style={{ marginBottom: '6px' }}><strong>Novo Lançamento:</strong> Abre a ficha em branco para novos cadastros.</li>
+                                <li style={{ marginBottom: '6px' }}><strong>Pergunte ao Chat:</strong> Use termos como *"como cadastrar cliente"* no chat para instruções passo a passo.</li>
+                              </ul>
+                            </div>
+                          </div>
+
+                          {/* Coluna 2: Boas Práticas Gerais */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            <div style={{ backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '8px', padding: '14px', flex: 1 }}>
+                              <strong style={{ fontSize: '0.7rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                <i className="fas fa-check-circle"></i> Manual de Boas Práticas
+                              </strong>
+                              <ol style={{ fontSize: '0.68rem', color: '#b5b5b9', paddingLeft: '16px', lineHeight: '1.6' }}>
+                                <li style={{ marginBottom: '8px' }}><strong>Conferência Diária:</strong> Realize auditorias em seus lotes antes de fazer transmissões ou fechamento do caixa.</li>
+                                <li style={{ marginBottom: '8px' }}><strong>Filtros Estritos:</strong> Reduza o intervalo de buscas por data para carregar telas de forma mais rápida e evitar travamentos.</li>
+                                <li style={{ marginBottom: '8px' }}><strong>Histórico de Ações:</strong> Utilize o botão de histórico para auditar alterações nos registros da plataforma.</li>
+                                <li style={{ marginBottom: '8px' }}><strong>Suporte Offline:</strong> Tenha sempre em mãos o widget baixado para tirar dúvidas sem precisar estar conectado à internet.</li>
+                              </ol>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'chat' && (
+                /* Aba de Chat original */
                 <>
                   {/* Glowing TTS Audio Control Bar */}
                   {isSpeaking && (
@@ -2594,7 +3306,6 @@ export default function App() {
                               key={rate}
                               onClick={() => {
                                 setSpeechRate(rate);
-                                // Restart with new speed
                                 startSpeaking(speakingText);
                               }}
                               style={{
@@ -2673,7 +3384,6 @@ export default function App() {
                             {msg.text}
                           </div>
 
-                          {/* TTS Voice icon trigger next to assistant messages */}
                           {!isUser && (
                             <button
                               onClick={() => startSpeaking(msg.text)}
