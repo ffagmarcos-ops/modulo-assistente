@@ -32,6 +32,103 @@ import { ScannerConsole } from './components/ScannerConsole';
         de NLP local e síntese de voz gratuitos do navegador.
    ========================================================================== */
 
+// Helper function to enrich scanned ERP JSON database with uploaded README text
+const enrichJsonWithReadme = (data: any, readmeText: string): any => {
+  if (!readmeText.trim()) return data;
+
+  const lines = readmeText.split('\n');
+  
+  // 1. Tenta extrair o nome do sistema da primeira tag heading `# Nome`
+  const titleMatch = readmeText.match(/^#\s+(.+)$/m);
+  if (titleMatch && titleMatch[1]) {
+    const extractedName = titleMatch[1].trim();
+    data.sistema = extractedName;
+    if (data.assistente) {
+      data.assistente.personalidade = `Especialista em ERP / ${extractedName}`;
+    }
+  }
+
+  // 2. Analisar os módulos e buscar menções ou parágrafos que contenham seus nomes no README
+  data.modulos = data.modulos.map((modulo: any) => {
+    const modNameNorm = modulo.nome.toLowerCase();
+    
+    // Procura parágrafos inteiros que mencionem o módulo
+    const matchingParagraphs: string[] = [];
+    let currentParagraph = '';
+    
+    lines.forEach(line => {
+      if (line.trim() === '') {
+        if (currentParagraph.toLowerCase().includes(modNameNorm)) {
+          matchingParagraphs.push(currentParagraph.trim());
+        }
+        currentParagraph = '';
+      } else {
+        currentParagraph += ' ' + line.trim();
+      }
+    });
+    if (currentParagraph.toLowerCase().includes(modNameNorm)) {
+      matchingParagraphs.push(currentParagraph.trim());
+    }
+
+    if (matchingParagraphs.length > 0) {
+      modulo.descricao = `${modulo.descricao} [Manual README: ${matchingParagraphs[0].slice(0, 150)}...]`;
+      
+      // Procura por listas ou itens com marcadores para adicionar como passos extras
+      const stepsMatch = matchingParagraphs[0].split(/[.;]|\n/).filter(s => s.trim().length > 15 && s.toLowerCase().includes(modNameNorm));
+      if (stepsMatch.length > 0) {
+        modulo.telas[0].passos = [
+          ...modulo.telas[0].passos,
+          ...stepsMatch.slice(0, 2).map(s => s.trim())
+        ];
+      }
+    }
+    return modulo;
+  });
+
+  // 3. Extrair pares de Perguntas e Respostas (Ex: Pergunta: O que é X? Resposta: É Y)
+  const faqRegex = /(?:Pergunta|Q|Dúvida):\s*(.+?)\n(?:Resposta|A):\s*(.+?)(?=\n(?:Pergunta|Q|Dúvida)|\n\n|$)/gi;
+  let match;
+  const extractedFaqs: any[] = [];
+  while ((match = faqRegex.exec(readmeText)) !== null) {
+    if (match[1] && match[2]) {
+      extractedFaqs.push({
+        pergunta: match[1].trim(),
+        resposta: match[2].trim()
+      });
+    }
+  }
+
+  if (extractedFaqs.length > 0) {
+    data.faq = [...extractedFaqs, ...data.faq];
+  }
+
+  // 4. Injetar o texto completo no array de base_conhecimento
+  data.base_conhecimento.push({
+    titulo: `Documentação Completa da Aplicação (README)`,
+    categoria: "Documentação Geral",
+    tags: ["readme", "documentação", "geral"],
+    conteudo: readmeText
+  });
+
+  // Dividir o manual por cabeçalhos ou parágrafos para gerar artigos segmentados
+  const sections = readmeText.split(/^##\s+/m).filter(s => s.trim());
+  sections.slice(0, 15).forEach((section, index) => {
+    const sectionLines = section.split('\n');
+    const title = sectionLines[0].trim() || `Seção de Documentação ${index + 1}`;
+    const content = sectionLines.slice(1).join('\n').trim();
+    if (content.length > 30) {
+      data.base_conhecimento.push({
+        titulo: `Manual: ${title}`,
+        categoria: "Manual do Desenvolvedor",
+        tags: ["readme", title.toLowerCase().replace(/\s+/g, '_')],
+        conteudo: content
+      });
+    }
+  });
+
+  return data;
+};
+
 // Programmatic Generator of ERP guide JSON matching exactly the requested structure
 const generateErpJson = (domain: string) => {
   const isKeystone = domain.toLowerCase().includes('keystone');
@@ -441,6 +538,22 @@ export default function App() {
   const [speakingText, setSpeakingText] = useState('');
   const [speechRate, setSpeechRate] = useState<number>(1);
 
+  // Upload do README / Documentação da Aplicação
+  const [uploadedReadme, setUploadedReadme] = useState('');
+  const [readmeFileName, setReadmeFileName] = useState('');
+
+  const handleReadmeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setReadmeFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setUploadedReadme(event.target?.result as string || '');
+    };
+    reader.readAsText(file);
+  };
+
   // --- GOOGLE AI STUDIO E ESTADO DE PODCAST DIALOGADO ---
   // Controle de abas: 'chat' (Guia), 'podcast' (Vozes) ou 'training' (LMS)
   const [activeTab, setActiveTab] = useState<'chat' | 'podcast' | 'training'>('chat');
@@ -513,21 +626,35 @@ export default function App() {
     setIsScanned(false);
     setScannedUrl(inputUrl);
     setSupplementaryText(''); // Reseta o texto complementar ao escanear nova URL
+    setUploadedReadme('');    // Reseta o readme carregado no novo escaneamento
+    setReadmeFileName('');
   };
 
   const handleScanComplete = () => {
-    const data = generateErpJson(scannedUrl);
+    let data = generateErpJson(scannedUrl);
     
     // Inject dynamic names into generated guide JSON
     data.assistente.nome = assistantName;
     data.assistente.personalidade = `Especialista em ERP (${assistantGender === 'masculino' ? 'Lucas' : 'Sofia'})`;
     data.texto_manual = supplementaryText;
     
+    // Enrich with uploaded readme content
+    if (uploadedReadme) {
+      data = enrichJsonWithReadme(data, uploadedReadme);
+      // Adapt settings if system name was customized in README
+      if (data.sistema !== 'SISTEMA ERP' && data.sistema !== 'KEYSTONE ERP') {
+        data.assistente.nome = `${data.sistema} AI`;
+        if (assistantName === 'Keystone AI' || assistantName === 'ERP Assistant') {
+          setAssistantName(`${data.sistema} AI`);
+        }
+      }
+    }
+
     const newAssistant = {
       id: Date.now().toString(),
       sistema: data.sistema,
       url: scannedUrl,
-      assistantName,
+      assistantName: data.assistente.nome,
       assistantGender,
       supplementaryText,
       json: data
@@ -548,7 +675,7 @@ export default function App() {
     setChatMessages([
       {
         sender: 'assistant',
-        text: `🤖 **Olá! Eu sou o ${assistantName}, seu guia explicativo do ${data.sistema}.**\n\nEu rastreei e analisei a estrutura de todo o sistema! \n\nEstou aqui para ensinar novos usuários. Você pode selecionar os tópicos de aprendizagem na barra lateral ou me perguntar qualquer dúvida direta sobre telas, botões ou fluxos de trabalho (ex: *"como cadastrar cliente"*, *"rejeição na nota"*).\n\n💡 **Dica:** Clique no ícone de alto-falante ao lado de qualquer mensagem para gerar e ouvir o tutorial narrado por voz!`
+        text: `🤖 **Olá! Eu sou o ${data.assistente.nome}, seu guia explicativo do ${data.sistema}.**\n\nEu rastreei e analisei a estrutura de todo o sistema! \n\nEstou aqui para ensinar novos usuários. Você pode selecionar os tópicos de aprendizagem na barra lateral ou me perguntar qualquer dúvida direta sobre telas, botões ou fluxos de trabalho (ex: *"como cadastrar cliente"*, *"rejeição na nota"*).\n\n💡 **Dica:** Clique no ícone de alto-falante ao lado de qualquer mensagem para gerar e ouvir o tutorial narrado por voz!`
       }
     ]);
   };
@@ -2086,8 +2213,8 @@ export default function App() {
           </div>
         </div>
 
-        <form onSubmit={handleStartScan} className="url-input-form">
-          <div className="url-input-container">
+        <form onSubmit={handleStartScan} className="url-input-form" style={{ display: 'flex', gap: '10px', alignItems: 'center', flex: 1, maxWidth: '800px' }}>
+          <div className="url-input-container" style={{ flex: 1 }}>
             <input
               type="text"
               className="url-input-field"
@@ -2100,11 +2227,63 @@ export default function App() {
             <i className="fas fa-link url-input-icon"></i>
           </div>
 
+          {/* Upload de README / Documentação */}
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            <label style={{
+              backgroundColor: readmeFileName ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.02)',
+              border: readmeFileName ? '1px solid #10b981' : '1px solid rgba(255,255,255,0.08)',
+              borderRadius: '8px',
+              padding: '10px 14px',
+              color: readmeFileName ? '#10b981' : '#b5b5b9',
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.15s ease',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '180px'
+            }} className="animate-hover">
+              <i className={readmeFileName ? "fas fa-file-circle-check" : "fas fa-file-import"}></i>
+              {readmeFileName ? readmeFileName : "Upload README (.md)"}
+              <input 
+                type="file" 
+                accept=".md,.txt,.json" 
+                onChange={handleReadmeUpload}
+                disabled={isScanning}
+                style={{ display: 'none' }}
+              />
+            </label>
+            {readmeFileName && (
+              <button 
+                type="button"
+                onClick={() => {
+                  setUploadedReadme('');
+                  setReadmeFileName('');
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#ef4444',
+                  fontSize: '0.72rem',
+                  cursor: 'pointer',
+                  padding: '2px'
+                }}
+                title="Limpar arquivo de documentação"
+              >
+                <i className="fas fa-times-circle"></i>
+              </button>
+            )}
+          </div>
+
           <button
             type="submit"
             className="btn-scan"
             disabled={isScanning}
-            style={{ background: 'linear-gradient(135deg, #8338ec, #3a86ff)' }}
+            style={{ background: 'linear-gradient(135deg, #8338ec, #3a86ff)', flexShrink: 0 }}
           >
             {isScanning ? (
               <>
