@@ -1,6 +1,37 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ScannerConsole } from './components/ScannerConsole';
 
+/* ==========================================================================
+   GUIA DE ARQUITETURA E ORIENTAÇÃO - PORTAL DO ASSISTENTE VIRTUAL
+   ==========================================================================
+   Este arquivo centraliza a lógica principal do portal. Abaixo estão as
+   diretrizes para entender e estender este código:
+   
+   1. GERADOR PARAMÉTRICO DE CONHECIMENTO (generateErpJson):
+      - Constrói o banco de dados do assistente no formato JSON requisitado.
+      - Para adicionar novos módulos, basta inserir o nome do módulo no array
+        'moduloNames' e configurar seus campos customizados no switch principal.
+      - Produz mais de 500 artigos, 300 FAQs, 10 fluxos e 1000 gatilhos.
+      
+   2. SISTEMA DE DIÁLOGO E PODCAST FALADO (Lucas & Sofia):
+      - Apresenta duas abas: Chat e Diálogo Falado.
+      - A geração do roteiro de podcast utiliza a API do Gemini 1.5 Flash se
+        uma chave API for configurada na barra lateral. Se não, utiliza um
+        algoritmo gerador de templates offline rico em dados.
+      - O player sequencial (playDialogueLine) lê as linhas uma por uma.
+        Ao terminar, aciona a próxima automaticamente via evento 'onended' ou 'onend'.
+        
+   3. SÍNTESE DE VOZ REALISTA (Gemini Modality AUDIO):
+      - A função 'fetchGeminiAudio' envia um prompt contendo a fala e configura
+        'responseModalities: ["AUDIO"]' com a voz 'Puck' (Lucas) ou 'Aoede' (Sofia).
+      - Retorna um arquivo binário codificado em Base64, reproduzido via objeto
+        Audio do HTML5, suportando controle de velocidade física (speechRate).
+        
+   4. EXPORTAÇÃO DE WIDGET FLUTUANTE (downloadWidget):
+      - Compila uma página HTML autossuficiente contendo todo o JSON e os scripts
+        de NLP local e síntese de voz gratuitos do navegador.
+   ========================================================================== */
+
 // Programmatic Generator of ERP guide JSON matching exactly the requested structure
 const generateErpJson = (domain: string) => {
   const isKeystone = domain.toLowerCase().includes('keystone');
@@ -837,6 +868,22 @@ export default function App() {
 
   // Helper to handle chatbot messaging and matching NLP triggers
   const triggerChatResponse = (text: string) => {
+    /* =======================================================================
+       ORIENTAÇÃO DE EXTENSÃO:
+       Este método 'triggerChatResponse' faz a busca semântica local baseada em
+       palavras-chave normalizadas para responder ao usuário instantaneamente a 
+       custo zero de tokens.
+       
+       Fluxo de busca:
+       1. Módulos/Telas -> Responde com o manual didático formatado
+       2. Fluxos/Processos -> Responde com as etapas ordenadas
+       3. Gatilhos do JSON -> Busca na lista de 1000+ frases programadas
+       4. FAQ do JSON -> Busca nas perguntas frequentes estruturadas
+       
+       Como estender para uma IA generativa real:
+       Você pode substituir toda a lógica abaixo por uma chamada de API, ex:
+       const response = await fetch('https://api.openai.com/v1/...', { ... });
+       ======================================================================= */
     const textNorm = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
 
     let matchedResponse = '';
